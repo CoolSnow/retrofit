@@ -15,23 +15,20 @@
  */
 package retrofit;
 
-import com.squareup.okhttp.Call;
 import com.squareup.okhttp.OkHttpClient;
-import com.squareup.okhttp.Request;
-import com.squareup.okhttp.Response;
-import com.squareup.okhttp.ResponseBody;
-import java.io.IOException;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import retrofit.converter.Converter;
 import retrofit.http.HTTP;
 import retrofit.http.Header;
 
+import static java.util.Collections.unmodifiableList;
 import static retrofit.Utils.checkNotNull;
 
 /**
@@ -42,7 +39,8 @@ import static retrofit.Utils.checkNotNull;
  * <p>
  * The relative path for a given method is obtained from an annotation on the method describing
  * the request type. The built-in methods are {@link retrofit.http.GET GET},
- * {@link retrofit.http.PUT PUT}, {@link retrofit.http.POST POST}, {@link retrofit.http.POST PATCH},
+ * {@link retrofit.http.PUT PUT}, {@link retrofit.http.POST POST}, {@link retrofit.http.POST
+ * PATCH},
  * {@link retrofit.http.HEAD HEAD}, and {@link retrofit.http.DELETE DELETE}. You can use a custom
  * HTTP method with {@link HTTP @HTTP}.
  * <p>
@@ -99,252 +97,75 @@ import static retrofit.Utils.checkNotNull;
  * @author Jake Wharton (jw@squareup.com)
  */
 public final class RestAdapter {
-  private final Map<Class<?>, Map<Method, MethodInfo>> serviceMethodInfoCache =
-      new LinkedHashMap<Class<?>, Map<Method, MethodInfo>>();
-
+  final Map<Method, MethodInfo> methodInfoCache = new LinkedHashMap<Method, MethodInfo>();
   final Endpoint endpoint;
-  final Executor callbackExecutor;
+  final OkHttpClient client;
   final Converter converter;
   final ErrorHandler errorHandler;
+  final List<CallAdapter> adapters;
 
-  private final OkHttpClient client;
-  private RxSupport rxSupport;
-
-  private RestAdapter(Endpoint endpoint, OkHttpClient client, Executor callbackExecutor,
-      Converter converter, ErrorHandler errorHandler) {
+  private RestAdapter(Endpoint endpoint, OkHttpClient client, Converter converter,
+      ErrorHandler errorHandler, List<CallAdapter> adapters) {
     this.endpoint = endpoint;
     this.client = client;
-    this.callbackExecutor = callbackExecutor;
     this.converter = converter;
     this.errorHandler = errorHandler;
+    this.adapters = unmodifiableList(new ArrayList<CallAdapter>(adapters));
   }
 
-  /** Create an implementation of the API defined by the specified {@code service} interface. */
-  @SuppressWarnings("unchecked")
+  /** Create an implementation of the API defined by the {@code service} interface. */
+  @SuppressWarnings("unchecked") // Single interface proxy creation guarded by parameter safety.
   public <T> T create(Class<T> service) {
     Utils.validateServiceClass(service);
     return (T) Proxy.newProxyInstance(service.getClassLoader(), new Class<?>[] { service },
-        new RestHandler(getMethodInfoCache(service)));
+        handler);
   }
 
-  Map<Method, MethodInfo> getMethodInfoCache(Class<?> service) {
-    synchronized (serviceMethodInfoCache) {
-      Map<Method, MethodInfo> methodInfoCache = serviceMethodInfoCache.get(service);
-      if (methodInfoCache == null) {
-        methodInfoCache = new LinkedHashMap<Method, MethodInfo>();
-        serviceMethodInfoCache.put(service, methodInfoCache);
-      }
-      return methodInfoCache;
-    }
-  }
-
-  static MethodInfo getMethodInfo(Map<Method, MethodInfo> cache, Method method) {
-    synchronized (cache) {
-      MethodInfo methodInfo = cache.get(method);
-      if (methodInfo == null) {
-        methodInfo = new MethodInfo(method);
-        cache.put(method, methodInfo);
-      }
-      return methodInfo;
-    }
-  }
-
-  private class RestHandler implements InvocationHandler {
-    private final Map<Method, MethodInfo> methodDetailsCache;
-
-    RestHandler(Map<Method, MethodInfo> methodDetailsCache) {
-      this.methodDetailsCache = methodDetailsCache;
-    }
-
-    @SuppressWarnings("unchecked") //
-    @Override public Object invoke(Object proxy, Method method, final Object[] args)
-        throws Throwable {
+  private final InvocationHandler handler = new InvocationHandler() {
+    @Override public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
       // If the method is a method from Object then defer to normal invocation.
       if (method.getDeclaringClass() == Object.class) {
         return method.invoke(this, args);
       }
 
-      MethodInfo methodInfo = getMethodInfo(methodDetailsCache, method);
-      Request request = createRequest(methodInfo, args);
-      switch (methodInfo.executionType) {
-        case SYNC:
-          return invokeSync(methodInfo, request);
-        case ASYNC:
-          invokeAsync(methodInfo, request, (Callback) args[args.length - 1]);
-          return null; // Async has void return type.
-        case RX:
-          return invokeRx(methodInfo, request);
-        default:
-          throw new IllegalStateException("Unknown response type: " + methodInfo.executionType);
-      }
+      MethodInfo methodInfo = loadMethodInfo(method);
+      Call execution = new Call(RestAdapter.this, methodInfo, args, null /* callbackExecutor */);
+      return methodInfo.adapter.adapt(execution, methodInfo.responsePackaging);
     }
+  };
 
-    private Object invokeSync(MethodInfo methodInfo, Request request) throws Throwable {
-      try {
-        Response response = client.newCall(request).execute();
-        return createResult(methodInfo, response);
-      } catch (IOException e) {
-        throw handleError(RetrofitError.networkFailure(request.urlString(), e));
-      } catch (RetrofitError error) {
-        throw handleError(error);
-      }
-    }
-
-    private Throwable handleError(RetrofitError error) {
-      Throwable throwable = errorHandler.handleError(error);
-      if (throwable == null) {
-        return new IllegalStateException("Error handler returned null for wrapped exception.",
-            error);
-      }
-      return throwable;
-    }
-
-    private void invokeAsync(final MethodInfo methodInfo, final Request request,
-        final Callback callback) {
-      Call call = client.newCall(request);
-      call.enqueue(new com.squareup.okhttp.Callback() {
-        @Override public void onFailure(Request request, IOException e) {
-          callFailure(callback, RetrofitError.networkFailure(request.urlString(), e));
-        }
-
-        @Override public void onResponse(Response response) {
-          try {
-            Object result = createResult(methodInfo, response);
-            callResponse(callback, result, response);
-          } catch (RetrofitError error) {
-            callFailure(callback, error);
-          }
-        }
-      });
-    }
-
-    private Object invokeRx(final MethodInfo methodInfo, final Request request) {
-      if (rxSupport == null) {
-        if (Platform.HAS_RX_JAVA) {
-          rxSupport = new RxSupport();
-        } else {
-          throw new IllegalStateException("Found Observable return type but RxJava not present.");
+  MethodInfo loadMethodInfo(Method method) {
+    MethodInfo methodInfo = methodInfoCache.get(method);
+    if (methodInfo == null) {
+      synchronized (methodInfoCache) {
+        methodInfo = methodInfoCache.get(method);
+        if (methodInfo == null) {
+          methodInfo = new MethodInfo(method, adapters);
+          methodInfoCache.put(method, methodInfo);
         }
       }
-      return rxSupport.createRequestObservable(new RxSupport.Invoker() {
-        @Override public void invoke(final Callback callback) {
-          Call call = client.newCall(request);
-          call.enqueue(new com.squareup.okhttp.Callback() {
-            @Override public void onFailure(Request request, IOException e) {
-              callback.next(RetrofitError.networkFailure(request.urlString(), e));
-            }
-
-            @Override public void onResponse(Response response) {
-              try {
-                Object result = createResult(methodInfo, response);
-                callback.next(result);
-              } catch (RetrofitError error) {
-                callback.error(handleError(error));
-              }
-            }
-          });
-
-        }
-      });
     }
+    return methodInfo;
+  }
 
-    /**
-     * Create the object to return to the caller for a response.
-     *
-     * @throws RetrofitError if any HTTP, network, or unexpected errors occurred.
-     */
-    private Object createResult(MethodInfo methodInfo, Response response) {
-      try {
-        return parseResult(methodInfo, response);
-      } catch (RetrofitError error) {
-        throw error; // Let our own errors pass through.
-      } catch (IOException e) {
-        throw RetrofitError.networkError(response, e);
-      } catch (Throwable t) {
-        throw RetrofitError.unexpectedError(response, t);
-      }
-    }
+  public Endpoint endpoint() {
+    return endpoint;
+  }
 
-    /**
-     * Parse the object to return to the caller from a response.
-     *
-     * @throws RetrofitError on non-2xx response codes (kind = HTTP).
-     * @throws IOException on network problems reading the response data.
-     * @throws RuntimeException on malformed response data.
-     */
-    private Object parseResult(MethodInfo methodInfo, Response response) throws IOException {
-      Type type = methodInfo.responseObjectType;
+  public OkHttpClient client() {
+    return client;
+  }
 
-      int statusCode = response.code();
-      if (statusCode < 200 || statusCode >= 300) {
-        response = Utils.readBodyToBytesIfNecessary(response);
-        throw RetrofitError.httpError(response, converter, type);
-      }
+  public Converter converter() {
+    return converter;
+  }
 
-      if (type.equals(Response.class)) {
-        if (!methodInfo.isStreaming) {
-          // Read the entire stream and replace with one backed by a byte[].
-          response = Utils.readBodyToBytesIfNecessary(response);
-        }
-        return response;
-      }
+  public ErrorHandler errorHandler() {
+    return errorHandler;
+  }
 
-      ResponseBody body = response.body();
-      if (statusCode == 204 || statusCode == 205) {
-        // HTTP 204 No Content "...response MUST NOT include a message-body"
-        // HTTP 205 Reset Content "...response MUST NOT include an entity"
-        if (body.contentLength() > 0) {
-          throw new IllegalStateException(statusCode + " response must not include body.");
-        }
-        return null;
-      }
-
-      ExceptionCatchingRequestBody wrapped = new ExceptionCatchingRequestBody(body);
-      try {
-        return converter.fromBody(wrapped, type);
-      } catch (RuntimeException e) {
-        // If the underlying input stream threw an exception, propagate that rather than
-        // indicating that it was a conversion exception.
-        if (wrapped.threwException()) {
-          throw wrapped.getThrownException();
-        }
-        throw e;
-      }
-    }
-
-    private void callResponse(final Callback callback, final Object result,
-        final Response response) {
-      callbackExecutor.execute(new Runnable() {
-        @Override public void run() {
-          callback.success(result, response);
-        }
-      });
-    }
-
-    private void callFailure(final Callback callback, RetrofitError error) {
-      Throwable throwable = handleError(error);
-      if (throwable != error) {
-        Response response = error.getResponse();
-        if (response != null) {
-          error = RetrofitError.unexpectedError(response, throwable);
-        } else {
-          error = RetrofitError.unexpectedError(error.getUrl(), throwable);
-        }
-      }
-      final RetrofitError finalError = error;
-      callbackExecutor.execute(new Runnable() {
-        @Override public void run() {
-          callback.failure(finalError);
-        }
-      });
-    }
-
-    private Request createRequest(MethodInfo methodInfo, Object[] args) {
-      String serverUrl = endpoint.url();
-      RequestBuilder requestBuilder = new RequestBuilder(serverUrl, methodInfo, converter);
-      requestBuilder.setArguments(args);
-      return requestBuilder.build();
-    }
+  public List<CallAdapter> executionAdapters() {
+    return adapters;
   }
 
   /**
@@ -359,10 +180,11 @@ public final class RestAdapter {
     private Executor callbackExecutor;
     private Converter converter;
     private ErrorHandler errorHandler;
+    private final List<CallAdapter> adapters = new ArrayList<CallAdapter>();
 
     /** API endpoint URL. */
     public Builder endpoint(String url) {
-       return endpoint(Endpoint.createFixed(url));
+      return endpoint(Endpoint.createFixed(url));
     }
 
     /** API endpoint. */
@@ -404,14 +226,19 @@ public final class RestAdapter {
       return this;
     }
 
+    /**
+     * TODO
+     */
+    public Builder addCallAdapter(CallAdapter adapter) {
+      adapters.add(checkNotNull(adapter, "adapter == null"));
+      return this;
+    }
+
     /** Create the {@link RestAdapter} instances. */
     public RestAdapter build() {
       checkNotNull(endpoint, "Endpoint required.");
-      ensureSaneDefaults();
-      return new RestAdapter(endpoint, client, callbackExecutor, converter, errorHandler);
-    }
 
-    private void ensureSaneDefaults() {
+      // Set any platform-appropriate defaults for unspecified components.
       if (converter == null) {
         converter = Platform.get().defaultConverter();
       }
@@ -424,6 +251,11 @@ public final class RestAdapter {
       if (errorHandler == null) {
         errorHandler = ErrorHandler.DEFAULT;
       }
+
+      // Add the built-in Call<?> return type handler last, with the provided callback executor.
+      adapters.add(new CallCallAdapter(callbackExecutor));
+
+      return new RestAdapter(endpoint, client, converter, errorHandler, adapters);
     }
   }
 }

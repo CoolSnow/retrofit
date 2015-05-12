@@ -14,13 +14,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import retrofit.converter.Converter;
 import retrofit.converter.GsonConverter;
-import retrofit.http.Body;
 import retrofit.http.GET;
 import retrofit.http.Headers;
-import retrofit.http.POST;
 import retrofit.http.Streaming;
-import rx.Observable;
-import rx.functions.Action1;
 
 import static com.squareup.okhttp.mockwebserver.SocketPolicy.DISCONNECT_AT_START;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -29,7 +25,6 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static retrofit.Utils.SynchronousExecutor;
 
 public class RestAdapterTest {
   private interface Example {
@@ -40,7 +35,6 @@ public class RestAdapterTest {
     @GET("/") Response direct();
     @GET("/") void direct(Callback<Response> callback);
     @GET("/") @Streaming Response streaming();
-    @POST("/") Observable<String> observable(@Body String body);
   }
   private interface InvalidExample extends Example {
   }
@@ -57,7 +51,6 @@ public class RestAdapterTest {
 
     example = new RestAdapter.Builder() //
         .client(client)
-        .callbackExecutor(new SynchronousExecutor())
         .endpoint(server.getUrl("/").toString())
         .converter(converter)
         .build()
@@ -249,43 +242,5 @@ public class RestAdapterTest {
     assertThat(error.getResponse().message()).isEqualTo("Broken!");
     assertThat(error.getSuccessType()).isEqualTo(String.class);
     assertThat(error.getBody()).isEqualTo("Hey");
-  }
-
-  @Test public void observableCallsOnNext() throws Exception {
-    server.enqueue(new MockResponse().setBody("hello"));
-
-    final AtomicReference<String> bodyRef = new AtomicReference<String>();
-    final CountDownLatch latch = new CountDownLatch(1);
-    example.observable("Howdy").subscribe(new Action1<String>() {
-      @Override public void call(String body) {
-        bodyRef.set(body);
-        latch.countDown();
-      }
-    });
-    assertTrue(latch.await(1, TimeUnit.SECONDS));
-
-    assertThat(bodyRef.get()).isEqualTo("hello");
-  }
-
-  @Test public void observableCallsOnError() throws Exception {
-    server.enqueue(new MockResponse().setResponseCode(500));
-
-    final AtomicReference<Throwable> errorRef = new AtomicReference<Throwable>();
-    final CountDownLatch latch = new CountDownLatch(1);
-    example.observable("Howdy").subscribe(new Action1<String>() {
-      @Override public void call(String s) {
-        throw new AssertionError();
-      }
-    }, new Action1<Throwable>() {
-      @Override public void call(Throwable throwable) {
-        errorRef.set(throwable);
-        latch.countDown();
-      }
-    });
-    assertTrue(latch.await(1, TimeUnit.SECONDS));
-
-    RetrofitError error = (RetrofitError) errorRef.get();
-    assertThat(error.getResponse().code()).isEqualTo(500);
-    assertThat(error.getSuccessType()).isEqualTo(String.class);
   }
 }

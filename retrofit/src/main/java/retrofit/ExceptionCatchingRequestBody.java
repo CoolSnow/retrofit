@@ -49,6 +49,10 @@ class ExceptionCatchingRequestBody extends ResponseBody {
     });
   }
 
+  @Override public void close() throws IOException {
+    delegate.close();
+  }
+
   IOException getThrownException() {
     return thrownException;
   }

@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,7 +40,6 @@ import retrofit.http.Path;
 import retrofit.http.Query;
 import retrofit.http.QueryMap;
 import retrofit.http.Streaming;
-import rx.Observable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertNull;
@@ -229,22 +229,6 @@ public class RequestBuilderTest {
     } catch (IllegalArgumentException e) {
       assertThat(e).hasMessage(
           "Example.method: Only methods having Response as data type are allowed to have @Streaming annotation.");
-    }
-  }
-
-  @Test public void observableWithCallback() {
-    class Example {
-      @GET("/foo") //
-      Observable<Response> method(Callback<Response> callback) {
-        return null;
-      }
-    }
-    try {
-      buildRequest(Example.class);
-      fail();
-    } catch (IllegalArgumentException e) {
-      assertThat(e).hasMessage(
-          "Example.method: Must have return type or Callback as last argument, not both.");
     }
   }
 
@@ -1560,7 +1544,8 @@ public class RequestBuilderTest {
 
   private Request buildRequest(Class<?> cls, Object... args) {
     Method method = TestingUtils.onlyMethod(cls);
-    MethodInfo methodInfo = new MethodInfo(method);
+    MethodInfo methodInfo = new MethodInfo(method,
+        Collections.<ExecutionAdapter>singletonList(new CallCallAdapter()));
 
     RequestBuilder builder = new RequestBuilder("http://example.com/", methodInfo, GSON);
     builder.setArguments(args);

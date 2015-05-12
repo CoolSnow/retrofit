@@ -15,7 +15,9 @@
  */
 package com.example.retrofit;
 
+import java.io.IOException;
 import java.util.List;
+import retrofit.Call;
 import retrofit.RestAdapter;
 import retrofit.http.GET;
 import retrofit.http.Path;
@@ -30,13 +32,12 @@ public class GitHubClient {
 
   interface GitHub {
     @GET("/repos/{owner}/{repo}/contributors")
-    List<Contributor> contributors(
+    Call<List<Contributor>> contributors(
         @Path("owner") String owner,
-        @Path("repo") String repo
-    );
+        @Path("repo") String repo);
   }
 
-  public static void main(String... args) {
+  public static void main(String... args) throws IOException {
     // Create a very simple REST adapter which points the GitHub API endpoint.
     RestAdapter restAdapter = new RestAdapter.Builder()
         .endpoint(API_URL)
@@ -45,8 +46,11 @@ public class GitHubClient {
     // Create an instance of our GitHub API interface.
     GitHub github = restAdapter.create(GitHub.class);
 
-    // Fetch and print a list of the contributors to this library.
-    List<Contributor> contributors = github.contributors("square", "retrofit");
+    // Create a call instance for looking up Retrofit contributors.
+    Call<List<Contributor>> call = github.contributors("square", "retrofit");
+
+    // Fetch and print a list of the contributors to the library.
+    List<Contributor> contributors = call.execute().body();
     for (Contributor contributor : contributors) {
       System.out.println(contributor.login + " (" + contributor.contributions + ")");
     }

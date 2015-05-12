@@ -20,8 +20,8 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.lang.reflect.WildcardType;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -33,6 +33,7 @@ import retrofit.http.FieldMap;
 import retrofit.http.FormUrlEncoded;
 import retrofit.http.GET;
 import retrofit.http.HEAD;
+import retrofit.http.HTTP;
 import retrofit.http.Header;
 import retrofit.http.Headers;
 import retrofit.http.Multipart;
@@ -44,24 +45,16 @@ import retrofit.http.PartMap;
 import retrofit.http.Path;
 import retrofit.http.Query;
 import retrofit.http.QueryMap;
-import retrofit.http.HTTP;
 import retrofit.http.Streaming;
-import rx.Observable;
 
 /** Request metadata about a service interface declaration. */
 final class MethodInfo {
-  enum ExecutionType {
-    ASYNC,
-    RX,
-    SYNC
-  }
-
   // Upper and lower characters, digits, underscores, and hyphens, starting with a character.
   private static final String PARAM = "[a-zA-Z][a-zA-Z0-9_-]*";
   private static final Pattern PARAM_NAME_REGEX = Pattern.compile(PARAM);
   private static final Pattern PARAM_URL_REGEX = Pattern.compile("\\{(" + PARAM + ")\\}");
 
-  enum RequestType {
+  enum RequestBody {
     /** No content-specific logic required. */
     SIMPLE,
     /** Multi-part request body. */
@@ -71,12 +64,15 @@ final class MethodInfo {
   }
 
   final Method method;
+  final List<CallAdapter> adapters;
 
   // Method-level details
-  final ExecutionType executionType;
-  Type responseObjectType;
-  Type requestObjectType;
-  RequestType requestType = RequestType.SIMPLE;
+  CallAdapter adapter;
+  CallAdapter.Packaging responsePackaging;
+  Type responseType;
+
+  Type requestType;
+  RequestBody requestBody = RequestBody.SIMPLE;
   String requestMethod;
   boolean requestHasBody;
   String requestUrl;
@@ -89,10 +85,10 @@ final class MethodInfo {
   // Parameter-level details
   Annotation[] requestParamAnnotations;
 
-  MethodInfo(Method method) {
+  MethodInfo(Method method, List<CallAdapter> adapters) {
     this.method = method;
-    executionType = parseResponseType();
-
+    this.adapters = adapters;
+    parseResponseType();
     parseMethodAnnotations();
     parseParameters();
   }
@@ -109,7 +105,7 @@ final class MethodInfo {
     return methodError(message + " (parameter #" + (index + 1) + ")", args);
   }
 
-  /** Loads {@link #requestMethod} and {@link #requestType}. */
+  /** Loads {@link #requestMethod} and {@link #requestBody}. */
   private void parseMethodAnnotations() {
     for (Annotation methodAnnotation : method.getAnnotations()) {
       Class<? extends Annotation> annotationType = methodAnnotation.annotationType();
@@ -135,17 +131,17 @@ final class MethodInfo {
         }
         headers = parseHeaders(headersToParse);
       } else if (annotationType == Multipart.class) {
-        if (requestType != RequestType.SIMPLE) {
+        if (requestBody != RequestBody.SIMPLE) {
           throw methodError("Only one encoding annotation is allowed.");
         }
-        requestType = RequestType.MULTIPART;
+        requestBody = RequestBody.MULTIPART;
       } else if (annotationType == FormUrlEncoded.class) {
-        if (requestType != RequestType.SIMPLE) {
+        if (requestBody != RequestBody.SIMPLE) {
           throw methodError("Only one encoding annotation is allowed.");
         }
-        requestType = RequestType.FORM_URL_ENCODED;
+        requestBody = RequestBody.FORM_URL_ENCODED;
       } else if (annotationType == Streaming.class) {
-        if (responseObjectType != Response.class) {
+        if (responseType != Response.class) {
           throw methodError(
               "Only methods having %s as data type are allowed to have @%s annotation.",
               Response.class.getSimpleName(), Streaming.class.getSimpleName());
@@ -158,11 +154,11 @@ final class MethodInfo {
       throw methodError("HTTP method annotation is required (e.g., @GET, @POST, etc.).");
     }
     if (!requestHasBody) {
-      if (requestType == RequestType.MULTIPART) {
+      if (requestBody == RequestBody.MULTIPART) {
         throw methodError(
             "Multipart can only be specified on HTTP methods with request body (e.g., @POST).");
       }
-      if (requestType == RequestType.FORM_URL_ENCODED) {
+      if (requestBody == RequestBody.FORM_URL_ENCODED) {
         throw methodError("FormUrlEncoded can only be specified on HTTP methods with request body "
                 + "(e.g., @POST).");
       }
@@ -223,69 +219,52 @@ final class MethodInfo {
     return builder.build();
   }
 
-  /** Loads {@link #responseObjectType}. */
-  private ExecutionType parseResponseType() {
-    // Synchronous methods have a non-void return type.
-    // Observable methods have a return type of Observable.
+  /** Loads {@link #responseType} and {@link #adapter}. */
+  private void parseResponseType() {
     Type returnType = method.getGenericReturnType();
 
-    // Asynchronous methods should have a Callback type as the last argument.
-    Type lastArgType = null;
-    Class<?> lastArgClass = null;
-    Type[] parameterTypes = method.getGenericParameterTypes();
-    if (parameterTypes.length > 0) {
-      Type typeToCheck = parameterTypes[parameterTypes.length - 1];
-      lastArgType = typeToCheck;
-      if (typeToCheck instanceof ParameterizedType) {
-        typeToCheck = ((ParameterizedType) typeToCheck).getRawType();
-      }
-      if (typeToCheck instanceof Class) {
-        lastArgClass = (Class<?>) typeToCheck;
-      }
-    }
-
-    boolean hasReturnType = returnType != void.class;
-    boolean hasCallback = lastArgClass != null && Callback.class.isAssignableFrom(lastArgClass);
-
     // Check for invalid configurations.
-    if (hasReturnType && hasCallback) {
-      throw methodError("Must have return type or Callback as last argument, not both.");
-    }
-    if (!hasReturnType && !hasCallback) {
-      throw methodError("Must have either a return type or Callback as last argument.");
+    if (returnType == void.class) {
+      throw methodError("Service methods cannot return void.");
     }
 
-    if (hasReturnType) {
-      if (Platform.HAS_RX_JAVA) {
-        Class rawReturnType = Types.getRawType(returnType);
-        if (RxSupport.isObservable(rawReturnType)) {
-          returnType = RxSupport.getObservableType(returnType, rawReturnType);
-          responseObjectType = getParameterUpperBound((ParameterizedType) returnType);
-          return ExecutionType.RX;
+    for (int i = 0, count = adapters.size(); i < count; i++) {
+      CallAdapter adapter = adapters.get(i);
+      Type parsedType = adapter.parseType(returnType);
+      if (parsedType != null) {
+        Class<?> rawType = Types.getRawType(parsedType);
+        if (rawType == retrofit.Response.class) {
+          if (!(parsedType instanceof ParameterizedType)) {
+            throw methodError(""); // TODO
+          }
+          responseType = Types.getParameterUpperBound((ParameterizedType) parsedType);
+          responsePackaging = CallAdapter.Packaging.RESPONSE;
+        } else if (rawType == Result.class) {
+          if (!(parsedType instanceof ParameterizedType)) {
+            throw methodError(""); // TODO
+          }
+          responseType = Types.getParameterUpperBound((ParameterizedType) parsedType);
+          responsePackaging = CallAdapter.Packaging.RESULT;
+        } else {
+          responseType = parsedType;
+          responsePackaging = CallAdapter.Packaging.NONE;
         }
-      }
-      responseObjectType = returnType;
-      return ExecutionType.SYNC;
-    }
 
-    lastArgType = Types.getSupertype(lastArgType, Types.getRawType(lastArgType), Callback.class);
-    if (lastArgType instanceof ParameterizedType) {
-      responseObjectType = getParameterUpperBound((ParameterizedType) lastArgType);
-      return ExecutionType.ASYNC;
-    }
+        this.adapter = adapter;
 
-    throw methodError("Last parameter must be of type Callback<X> or Callback<? super X>.");
-  }
-
-  private static Type getParameterUpperBound(ParameterizedType type) {
-    Type[] types = type.getActualTypeArguments();
-    for (int i = 0; i < types.length; i++) {
-      Type paramType = types[i];
-      if (paramType instanceof WildcardType) {
-        types[i] = ((WildcardType) paramType).getUpperBounds()[0];
+        return;
       }
     }
-    return types[0];
+
+    StringBuilder builder =
+        new StringBuilder("No registered call adapters were able to handle return type ").append(
+            returnType).append(". Checked: [ ");
+    for (int i = 0, count = adapters.size(); i < count; i++) {
+      if (i > 0) builder.append(", ");
+      builder.append(adapters.get(i).getClass().getSimpleName());
+    }
+    builder.append(" ]");
+    throw methodError(builder.toString());
   }
 
   /**
@@ -296,10 +275,6 @@ final class MethodInfo {
 
     Annotation[][] methodParameterAnnotationArrays = method.getParameterAnnotations();
     int count = methodParameterAnnotationArrays.length;
-    if (executionType == ExecutionType.ASYNC) {
-      count -= 1; // Callback is last argument when not a synchronous method.
-    }
-
     Annotation[] requestParamAnnotations = new Annotation[count];
 
     boolean gotField = false;
@@ -326,13 +301,13 @@ final class MethodInfo {
           } else if (methodAnnotationType == Header.class) {
             // Nothing to do.
           } else if (methodAnnotationType == Field.class) {
-            if (requestType != RequestType.FORM_URL_ENCODED) {
+            if (requestBody != RequestBody.FORM_URL_ENCODED) {
               throw parameterError(i, "@Field parameters can only be used with form encoding.");
             }
 
             gotField = true;
           } else if (methodAnnotationType == FieldMap.class) {
-            if (requestType != RequestType.FORM_URL_ENCODED) {
+            if (requestBody != RequestBody.FORM_URL_ENCODED) {
               throw parameterError(i, "@FieldMap parameters can only be used with form encoding.");
             }
             if (!Map.class.isAssignableFrom(Types.getRawType(methodParameterType))) {
@@ -341,13 +316,13 @@ final class MethodInfo {
 
             gotField = true;
           } else if (methodAnnotationType == Part.class) {
-            if (requestType != RequestType.MULTIPART) {
+            if (requestBody != RequestBody.MULTIPART) {
               throw parameterError(i, "@Part parameters can only be used with multipart encoding.");
             }
 
             gotPart = true;
           } else if (methodAnnotationType == PartMap.class) {
-            if (requestType != RequestType.MULTIPART) {
+            if (requestBody != RequestBody.MULTIPART) {
               throw parameterError(i,
                   "@PartMap parameters can only be used with multipart encoding.");
             }
@@ -357,7 +332,7 @@ final class MethodInfo {
 
             gotPart = true;
           } else if (methodAnnotationType == Body.class) {
-            if (requestType != RequestType.SIMPLE) {
+            if (requestBody != RequestBody.SIMPLE) {
               throw parameterError(i,
                   "@Body parameters cannot be used with form or multi-part encoding.");
             }
@@ -365,7 +340,7 @@ final class MethodInfo {
               throw methodError("Multiple @Body method annotations found.");
             }
 
-            requestObjectType = methodParameterType;
+            requestType = methodParameterType;
             gotBody = true;
           } else {
             // This is a non-Retrofit annotation. Skip to the next one.
@@ -387,13 +362,13 @@ final class MethodInfo {
       }
     }
 
-    if (requestType == RequestType.SIMPLE && !requestHasBody && gotBody) {
+    if (requestBody == RequestBody.SIMPLE && !requestHasBody && gotBody) {
       throw methodError("Non-body HTTP method cannot contain @Body or @TypedOutput.");
     }
-    if (requestType == RequestType.FORM_URL_ENCODED && !gotField) {
+    if (requestBody == RequestBody.FORM_URL_ENCODED && !gotField) {
       throw methodError("Form-encoded method must contain at least one @Field.");
     }
-    if (requestType == RequestType.MULTIPART && !gotPart) {
+    if (requestBody == RequestBody.MULTIPART && !gotPart) {
       throw methodError("Multipart method must contain at least one @Part.");
     }
 
@@ -422,16 +397,5 @@ final class MethodInfo {
       patterns.add(m.group(1));
     }
     return patterns;
-  }
-
-  /** Indirection to avoid log complaints if RxJava isn't present. */
-  private static final class RxSupport {
-    public static boolean isObservable(Class rawType) {
-      return rawType == Observable.class;
-    }
-
-    public static Type getObservableType(Type contextType, Class contextRawType) {
-      return Types.getSupertype(contextType, contextRawType, Observable.class);
-    }
   }
 }

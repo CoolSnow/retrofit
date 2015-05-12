@@ -37,10 +37,9 @@ final class Utils {
    * Replace a {@link Response} with an identical copy whose body is backed by a
    * {@link Buffer} rather than a {@link Source}.
    */
-  static Response readBodyToBytesIfNecessary(Response response) throws IOException {
-    final ResponseBody body = response.body();
+  static ResponseBody readBodyToBytesIfNecessary(final ResponseBody body) throws IOException {
     if (body == null) {
-      return response;
+      return null;
     }
 
     BufferedSource source = body.source();
@@ -48,21 +47,19 @@ final class Utils {
     buffer.writeAll(source);
     source.close();
 
-    return response.newBuilder()
-        .body(new ResponseBody() {
-          @Override public MediaType contentType() {
-            return body.contentType();
-          }
+    return new ResponseBody() {
+      @Override public MediaType contentType() {
+        return body.contentType();
+      }
 
-          @Override public long contentLength() {
-            return buffer.size();
-          }
+      @Override public long contentLength() {
+        return buffer.size();
+      }
 
-          @Override public BufferedSource source() {
-            return buffer.clone();
-          }
-        })
-        .build();
+      @Override public BufferedSource source() {
+        return buffer.clone();
+      }
+    };
   }
 
   static <T> void validateServiceClass(Class<T> service) {

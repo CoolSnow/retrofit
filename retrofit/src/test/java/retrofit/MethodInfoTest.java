@@ -58,7 +58,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.requestObjectType).isEqualTo(Dummy.class);
+    assertThat(methodInfo.requestType).isEqualTo(Dummy.class);
   }
 
   @Test public void genericBodyType() {
@@ -71,7 +71,7 @@ public class MethodInfoTest {
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
     Type expected = new TypeToken<List<String>>() {}.getType();
-    assertThat(methodInfo.requestObjectType).isEqualTo(expected);
+    assertThat(methodInfo.requestType).isEqualTo(expected);
   }
 
   @Test public void wildcardBodyType() {
@@ -84,7 +84,7 @@ public class MethodInfoTest {
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
     Type expected = new TypeToken<List<? super String>>() {}.getType();
-    assertThat(methodInfo.requestObjectType).isEqualTo(expected);
+    assertThat(methodInfo.requestType).isEqualTo(expected);
   }
 
   @Test public void concreteCallbackTypes() {
@@ -95,7 +95,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(Response.class);
+    assertThat(methodInfo.responseType).isEqualTo(Response.class);
   }
 
   @Test public void genericCallbackTypes() {
@@ -106,7 +106,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(Response.class);
+    assertThat(methodInfo.responseType).isEqualTo(Response.class);
   }
 
   @Test public void wildcardGenericCallbackTypes() {
@@ -117,7 +117,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(Response.class);
+    assertThat(methodInfo.responseType).isEqualTo(Response.class);
   }
 
   @Test public void genericCallbackWithGenericType() {
@@ -130,7 +130,7 @@ public class MethodInfoTest {
     MethodInfo methodInfo = new MethodInfo(method);
 
     Type expected = new TypeToken<List<String>>() {}.getType();
-    assertThat(methodInfo.responseObjectType).isEqualTo(expected);
+    assertThat(methodInfo.responseType).isEqualTo(expected);
   }
 
   // RestMethodInfo reconstructs this type from MultimapCallback<String, Set<Long>>. It contains
@@ -145,7 +145,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(
+    assertThat(methodInfo.responseType).isEqualTo(
         MethodInfoTest.class.getDeclaredField("extendingGenericCallbackType").getGenericType());
   }
 
@@ -158,7 +158,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(Response.class);
+    assertThat(methodInfo.responseType).isEqualTo(Response.class);
   }
 
   @Test public void synchronousGenericResponse() {
@@ -172,7 +172,7 @@ public class MethodInfoTest {
     MethodInfo methodInfo = new MethodInfo(method);
 
     Type expected = new TypeToken<List<String>>() {}.getType();
-    assertThat(methodInfo.responseObjectType).isEqualTo(expected);
+    assertThat(methodInfo.responseType).isEqualTo(expected);
   }
 
   @Test public void streamingResponse() {
@@ -184,7 +184,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(Response.class);
+    assertThat(methodInfo.responseType).isEqualTo(Response.class);
   }
 
   @Test public void observableResponse() {
@@ -196,7 +196,7 @@ public class MethodInfoTest {
 
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
-    assertThat(methodInfo.responseObjectType).isEqualTo(Response.class);
+    assertThat(methodInfo.responseType).isEqualTo(Response.class);
   }
 
   @Test public void observableGenericResponse() {
@@ -209,12 +209,12 @@ public class MethodInfoTest {
     Method method = TestingUtils.onlyMethod(Example.class);
     MethodInfo methodInfo = new MethodInfo(method);
     Type expected = new TypeToken<List<String>>() {}.getType();
-    assertThat(methodInfo.responseObjectType).isEqualTo(expected);
+    assertThat(methodInfo.responseType).isEqualTo(expected);
   }
 
-  private static interface ResponseCallback extends Callback<Response> {
+  private interface ResponseCallback extends Callback<Response> {
   }
 
-  private static interface MultimapCallback<K, V> extends Callback<Map<? extends K, V[]>> {
+  private interface MultimapCallback<K, V> extends Callback<Map<? extends K, V[]>> {
   }
 }

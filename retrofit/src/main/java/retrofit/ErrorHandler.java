@@ -44,12 +44,12 @@ public interface ErrorHandler {
    * @return Throwable an exception which will be thrown from a synchronous interface method or
    *         passed to an asynchronous error callback. Must not be {@code null}.
    */
-  Throwable handleError(RetrofitError cause);
+  Throwable handleError(Response<?> cause);
 
   /** An {@link ErrorHandler} which returns the original error. */
   ErrorHandler DEFAULT = new ErrorHandler() {
-    @Override public Throwable handleError(RetrofitError cause) {
-      return cause;
+    @Override public Throwable handleError(Response<?> cause) {
+      return new RuntimeException(); // TODO
     }
   };
 }
